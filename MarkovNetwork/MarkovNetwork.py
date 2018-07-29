@@ -21,6 +21,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
 
 from __future__ import print_function
+from multiprocessing.pool import ThreadPool
 import numpy as np
 
 
@@ -142,57 +143,71 @@ class MarkovNetwork(object):
 
                 self.markov_gates.append(markov_gate)
 
-    def activate_network(self, num_activations=1):
+    def activate_network(self, data, num_activations=1):
         """Activates the Markov Network
-
         Parameters
         ----------
         num_activations: int (default: 1)
             The number of times the Markov Network should be activated
-
         Returns
         -------
         None
-
         """
-        # Save original input values
-        original_input_values = np.copy(self.states[:self.num_input_states])
-        for _ in range(num_activations):
-            # NOTE: This routine can be refactored to use NumPy if larger MNs are being used
-            # See implementation at https://github.com/rhiever/MarkovNetwork/blob/a381aa9919bb6898b56f678e08127ba6e0eef98f/MarkovNetwork/MarkovNetwork.py#L162:L169
-            for markov_gate, mg_input_ids, mg_output_ids in zip(self.markov_gates, self.markov_gate_input_ids,
-                                                                self.markov_gate_output_ids):
 
-                mg_input_index, marker = 0, 1
-                # Create an integer from bytes representation (loop is faster than previous implementation)
-                for mg_input_id in reversed(mg_input_ids):
-                    if self.states[mg_input_id]:
-                        mg_input_index += marker
-                    marker *= 2
+        pool = ThreadPool()
 
-                # Determine the corresponding output values for this Markov Gate
-                roll = np.random.uniform()  # sets a roll value
-                markov_gate_subarray = markov_gate[mg_input_index]  # selects a Markov Gate subarray
+        for input in data:
+            self.update_input_states(input)
 
-                # Searches for the first value where markov_gate > roll
-                for i, markov_gate_element in enumerate(markov_gate_subarray):
-                    if markov_gate_element >= roll:
-                        mg_output_index = i
-                        break
+            # Save original input values
+            original_input_values = np.copy(self.states[:self.num_input_states])
 
-                # Converts the index into a string of '1's and '0's (binary representation)
-                mg_output_values = bin(mg_output_index)  # bin() is much faster than np.binaryrepr()
+            for _ in range(num_activations):
+                # NOTE: This routine can be refactored to use NumPy if larger MNs are being used
+                # See implementation at https://github.com/rhiever/MarkovNetwork/blob/a381aa9919bb6898b56f678e08127ba6e0eef98f/MarkovNetwork/MarkovNetwork.py#L162:L169
+                zipped = zip(self.markov_gates, self.markov_gate_input_ids, self.markov_gate_output_ids)
 
-                # diff_len deals with the lack of the width argument there was on np.binaryrepr()
-                diff_len = mg_output_ids.shape[0] - (len(mg_output_values) - 2)
+                returned = pool.map(self.mp_func, zipped)
 
-                # Loops through 'mg_output_values' and alter 'self.states'
-                for i, mg_output_value in enumerate(mg_output_values[2:]):
-                    if mg_output_value == '1':
-                        self.states[mg_output_ids[i + diff_len]] = True
+                for mg_output_values, mg_output_ids, diff_len in returned:
+                    # Loops through 'mg_output_values' and alter 'self.states'
+                    for i, mg_output_value in enumerate(mg_output_values[2:]):
+                        if mg_output_value == '1':
+                            self.states[mg_output_ids[i + diff_len]] = True
 
-            # Replace original input values
+                # Replace original input values
             self.states[:self.num_input_states] = original_input_values
+
+        pool.close()
+        pool.join()
+
+    def mp_func(self, zipped_list):
+        markov_gate, mg_input_ids, mg_output_ids = zipped_list
+
+        mg_input_index, marker = 0, 1
+        # Create an integer from bytes representation (loop is faster than previous implementation)
+        for mg_input_id in reversed(mg_input_ids):
+            if self.states[mg_input_id]:
+                mg_input_index += marker
+            marker *= 2
+
+        # Determine the corresponding output values for this Markov Gate
+        roll = np.random.uniform()  # sets a roll value
+        markov_gate_subarray = markov_gate[mg_input_index]  # selects a Markov Gate subarray
+
+        # Searches for the first value where markov_gate > roll
+        for i, markov_gate_element in enumerate(markov_gate_subarray):
+            if markov_gate_element >= roll:
+                mg_output_index = i
+                break
+
+        # Converts the index into a string of '1's and '0's (binary representation)
+        mg_output_values = bin(mg_output_index)  # bin() is much faster than np.binaryrepr()
+
+        # diff_len deals with the lack of the width argument there was on np.binaryrepr()
+        diff_len = mg_output_ids.shape[0] - (len(mg_output_values) - 2)
+
+        return mg_output_values, mg_output_ids, diff_len
 
     def update_input_states(self, input_values):
         """Updates the input states with the provided inputs
